@@ -1,7 +1,9 @@
 //! HIR pretty-printing is layered on top of AST pretty-printing. A number of
 //! the definitions in this file have equivalents in `rustc_ast_pretty`.
 
+// tidy-alphabetical-start
 #![recursion_limit = "256"]
+// tidy-alphabetical-end
 
 use rustc_ast as ast;
 use rustc_ast::util::parser::{self, AssocOp, Fixity};
@@ -11,7 +13,7 @@ use rustc_ast_pretty::pprust::{Comments, PrintState};
 use rustc_hir as hir;
 use rustc_hir::{
     BindingMode, ByRef, GenericArg, GenericBound, GenericParam, GenericParamKind, HirId,
-    LifetimeParamKind, Node, PatKind, RangeEnd, Term, TraitBoundModifier,
+    LifetimeParamKind, Node, PatKind, PreciseCapturingArg, RangeEnd, Term, TraitBoundModifier,
 };
 use rustc_span::source_map::SourceMap;
 use rustc_span::symbol::{kw, Ident, Symbol};
@@ -2098,7 +2100,21 @@ impl<'a> State<'a> {
                 GenericBound::Outlives(lt) => {
                     self.print_lifetime(lt);
                 }
+                GenericBound::Use(args, _) => {
+                    self.word("use <");
+
+                    self.commasep(Inconsistent, args, |s, arg| s.print_precise_capturing_arg(*arg));
+
+                    self.word(">");
+                }
             }
+        }
+    }
+
+    fn print_precise_capturing_arg(&mut self, arg: PreciseCapturingArg<'_>) {
+        match arg {
+            PreciseCapturingArg::Lifetime(lt) => self.print_lifetime(lt),
+            PreciseCapturingArg::Param(arg) => self.print_ident(arg.ident),
         }
     }
 

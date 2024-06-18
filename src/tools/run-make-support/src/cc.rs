@@ -1,14 +1,13 @@
 use std::path::Path;
-use std::process::Command;
 
-use crate::{
-    bin_name, cygpath_windows, env_var, handle_failed_output, is_msvc, is_windows, tmp_dir, uname,
-};
+use crate::command::Command;
+use crate::{bin_name, cygpath_windows, env_var, is_msvc, is_windows, uname};
 
 /// Construct a new platform-specific C compiler invocation.
 ///
 /// WARNING: This means that what flags are accepted by the underlying C compiler is
 /// platform- AND compiler-specific. Consult the relevant docs for `gcc`, `clang` and `mvsc`.
+#[track_caller]
 pub fn cc() -> Cc {
     Cc::new()
 }
@@ -16,6 +15,7 @@ pub fn cc() -> Cc {
 /// A platform-specific C compiler invocation builder. The specific C compiler used is
 /// passed down from compiletest.
 #[derive(Debug)]
+#[must_use]
 pub struct Cc {
     cmd: Command,
 }
@@ -27,6 +27,7 @@ impl Cc {
     ///
     /// WARNING: This means that what flags are accepted by the underlying C compile is
     /// platform- AND compiler-specific. Consult the relevant docs for `gcc`, `clang` and `mvsc`.
+    #[track_caller]
     pub fn new() -> Self {
         let compiler = env_var("CC");
 
@@ -54,8 +55,7 @@ impl Cc {
         self
     }
 
-    /// Specify `-o` or `-Fe`/`-Fo` depending on platform/compiler. This assumes that the executable
-    /// is under `$TMPDIR`.
+    /// Specify `-o` or `-Fe`/`-Fo` depending on platform/compiler.
     pub fn out_exe(&mut self, name: &str) -> &mut Self {
         // Ref: tools.mk (irrelevant lines omitted):
         //
@@ -69,13 +69,13 @@ impl Cc {
         // ```
 
         if is_msvc() {
-            let fe_path = cygpath_windows(tmp_dir().join(bin_name(name)));
-            let fo_path = cygpath_windows(tmp_dir().join(format!("{name}.obj")));
+            let fe_path = cygpath_windows(bin_name(name));
+            let fo_path = cygpath_windows(format!("{name}.obj"));
             self.cmd.arg(format!("-Fe:{fe_path}"));
             self.cmd.arg(format!("-Fo:{fo_path}"));
         } else {
             self.cmd.arg("-o");
-            self.cmd.arg(tmp_dir().join(name));
+            self.cmd.arg(name);
         }
 
         self
@@ -86,11 +86,6 @@ impl Cc {
         self.cmd.arg("-o");
         self.cmd.arg(path.as_ref());
         self
-    }
-
-    /// Get the [`Output`][::std::process::Output] of the finished process.
-    pub fn command_output(&mut self) -> ::std::process::Output {
-        self.cmd.output().expect("failed to get output of finished process")
     }
 }
 

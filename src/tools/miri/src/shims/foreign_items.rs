@@ -40,8 +40,8 @@ pub trait EvalContextExt<'tcx>: crate::MiriInterpCxExt<'tcx> {
         &mut self,
         link_name: Symbol,
         abi: Abi,
-        args: &[OpTy<'tcx, Provenance>],
-        dest: &MPlaceTy<'tcx, Provenance>,
+        args: &[OpTy<'tcx>],
+        dest: &MPlaceTy<'tcx>,
         ret: Option<mir::BasicBlock>,
         unwind: mir::UnwindAction,
     ) -> InterpResult<'tcx, Option<(&'tcx mir::Body<'tcx>, ty::Instance<'tcx>)>> {
@@ -123,8 +123,8 @@ pub trait EvalContextExt<'tcx>: crate::MiriInterpCxExt<'tcx> {
         &mut self,
         sym: DynSym,
         abi: Abi,
-        args: &[OpTy<'tcx, Provenance>],
-        dest: &MPlaceTy<'tcx, Provenance>,
+        args: &[OpTy<'tcx>],
+        dest: &MPlaceTy<'tcx>,
         ret: Option<mir::BasicBlock>,
         unwind: mir::UnwindAction,
     ) -> InterpResult<'tcx> {
@@ -208,8 +208,8 @@ trait EvalContextExtPriv<'tcx>: crate::MiriInterpCxExt<'tcx> {
         &mut self,
         link_name: Symbol,
         abi: Abi,
-        args: &[OpTy<'tcx, Provenance>],
-        dest: &MPlaceTy<'tcx, Provenance>,
+        args: &[OpTy<'tcx>],
+        dest: &MPlaceTy<'tcx>,
     ) -> InterpResult<'tcx, EmulateItemResult> {
         let this = self.eval_context_mut();
 
@@ -238,11 +238,11 @@ trait EvalContextExtPriv<'tcx>: crate::MiriInterpCxExt<'tcx> {
         // ```
         // fn shim_name(
         //     &mut self,
-        //     arg1: &OpTy<'tcx, Provenance>,
-        //     arg2: &OpTy<'tcx, Provenance>,
-        //     arg3: &OpTy<'tcx, Provenance>,
-        //     arg4: &OpTy<'tcx, Provenance>)
-        // -> InterpResult<'tcx, Scalar<Provenance>> {
+        //     arg1: &OpTy<'tcx>,
+        //     arg2: &OpTy<'tcx>,
+        //     arg3: &OpTy<'tcx>,
+        //     arg4: &OpTy<'tcx>)
+        // -> InterpResult<'tcx, Scalar> {
         //     let this = self.eval_context_mut();
         //
         //     // First thing: load all the arguments. Details depend on the shim.
@@ -396,12 +396,12 @@ trait EvalContextExtPriv<'tcx>: crate::MiriInterpCxExt<'tcx> {
                     // If the newly promised alignment is bigger than the native alignment of this
                     // allocation, and bigger than the previously promised alignment, then set it.
                     if align > alloc_align
-                        && !this
+                        && this
                             .machine
                             .symbolic_alignment
                             .get_mut()
                             .get(&alloc_id)
-                            .is_some_and(|&(_, old_align)| align <= old_align)
+                            .is_none_or(|&(_, old_align)| align > old_align)
                     {
                         this.machine.symbolic_alignment.get_mut().insert(alloc_id, (offset, align));
                     }

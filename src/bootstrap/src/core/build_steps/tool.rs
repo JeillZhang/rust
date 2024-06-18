@@ -9,7 +9,6 @@ use crate::core::builder;
 use crate::core::builder::{Builder, Cargo as CargoCommand, RunConfig, ShouldRun, Step};
 use crate::core::config::TargetSelection;
 use crate::utils::channel::GitInfo;
-use crate::utils::exec::BootstrapCommand;
 use crate::utils::helpers::output;
 use crate::utils::helpers::{add_dylib_path, exe, t};
 use crate::Compiler;
@@ -110,9 +109,8 @@ impl Step for ToolBuild {
             &self.target,
         );
 
-        let mut cargo = Command::from(cargo);
         // we check this below
-        let build_success = builder.run_cmd(BootstrapCommand::from(&mut cargo).allow_failure());
+        let build_success = compile::stream_cargo(builder, cargo, vec![], &mut |_| {});
 
         builder.save_toolstate(
             tool,
@@ -201,7 +199,7 @@ pub fn prepare_tool_cargo(
         cargo.env("CFG_COMMIT_DATE", date);
     }
     if !features.is_empty() {
-        cargo.arg("--features").arg(&features.join(", "));
+        cargo.arg("--features").arg(features.join(", "));
     }
 
     // Enable internal lints for clippy and rustdoc
@@ -523,10 +521,7 @@ impl Step for Rustdoc {
         // If the rustdoc output is piped to e.g. `head -n1` we want the process
         // to be killed, rather than having an error bubble up and cause a
         // panic.
-        // FIXME: Synthetic #[cfg(bootstrap)]. Remove when the bootstrap compiler supports it.
-        if build_compiler.stage > 0 {
-            cargo.rustflag("-Zon-broken-pipe=kill");
-        }
+        cargo.rustflag("-Zon-broken-pipe=kill");
 
         let _guard = builder.msg_tool(
             Kind::Build,
@@ -828,19 +823,29 @@ impl Step for LibcxxVersionTool {
 
     fn run(self, builder: &Builder<'_>) -> LibcxxVersion {
         let out_dir = builder.out.join(self.target.to_string()).join("libcxx-version");
-        let _ = fs::remove_dir_all(&out_dir);
-        t!(fs::create_dir_all(&out_dir));
-
-        let compiler = builder.cxx(self.target).unwrap();
-        let mut cmd = Command::new(compiler);
-
         let executable = out_dir.join(exe("libcxx-version", self.target));
-        cmd.arg("-o").arg(&executable).arg(builder.src.join("src/tools/libcxx-version/main.cpp"));
 
-        builder.run_cmd(&mut cmd);
-
+        // This is a sanity-check specific step, which means it is frequently called (when using
+        // CI LLVM), and compiling `src/tools/libcxx-version/main.cpp` at the beginning of the bootstrap
+        // invocation adds a fair amount of overhead to the process (see https://github.com/rust-lang/rust/issues/126423).
+        // Therefore, we want to avoid recompiling this file unnecessarily.
         if !executable.exists() {
-            panic!("Something went wrong. {} is not present", executable.display());
+            if !out_dir.exists() {
+                t!(fs::create_dir_all(&out_dir));
+            }
+
+            let compiler = builder.cxx(self.target).unwrap();
+            let mut cmd = Command::new(compiler);
+
+            cmd.arg("-o")
+                .arg(&executable)
+                .arg(builder.src.join("src/tools/libcxx-version/main.cpp"));
+
+            builder.run_cmd(&mut cmd);
+
+            if !executable.exists() {
+                panic!("Something went wrong. {} is not present", executable.display());
+            }
         }
 
         let version_output = output(&mut Command::new(executable));

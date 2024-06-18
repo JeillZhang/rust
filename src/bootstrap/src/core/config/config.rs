@@ -10,7 +10,7 @@ use std::env;
 use std::fmt::{self, Display};
 use std::fs;
 use std::io::IsTerminal;
-use std::path::{Path, PathBuf};
+use std::path::{absolute, Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
 use std::sync::OnceLock;
@@ -20,7 +20,7 @@ use crate::core::build_steps::llvm;
 use crate::core::config::flags::{Color, Flags, Warnings};
 use crate::utils::cache::{Interned, INTERNER};
 use crate::utils::channel::{self, GitInfo};
-use crate::utils::helpers::{exe, output, t};
+use crate::utils::helpers::{self, exe, output, t};
 use build_helper::exit;
 use serde::{Deserialize, Deserializer};
 use serde_derive::Deserialize;
@@ -1248,7 +1248,7 @@ impl Config {
 
         // Infer the source directory. This is non-trivial because we want to support a downloaded bootstrap binary,
         // running on a completely different machine from where it was compiled.
-        let mut cmd = Command::new("git");
+        let mut cmd = helpers::git(None);
         // NOTE: we cannot support running from outside the repository because the only other path we have available
         // is set at compile time, which can be wrong if bootstrap was downloaded rather than compiled locally.
         // We still support running outside the repository if we find we aren't in a git directory.
@@ -1437,7 +1437,7 @@ impl Config {
         // To avoid writing to random places on the file system, `config.out` needs to be an absolute path.
         if !config.out.is_absolute() {
             // `canonicalize` requires the path to already exist. Use our vendored copy of `absolute` instead.
-            config.out = crate::utils::helpers::absolute(&config.out);
+            config.out = absolute(&config.out).expect("can't make empty path absolute");
         }
 
         config.initial_rustc = if let Some(rustc) = rustc {
@@ -1608,19 +1608,8 @@ impl Config {
             set(&mut config.channel, channel);
 
             config.download_rustc_commit = config.download_ci_rustc_commit(download_rustc);
-            // This list is incomplete, please help by expanding it!
-            if config.download_rustc_commit.is_some() {
-                // We need the channel used by the downloaded compiler to match the one we set for rustdoc;
-                // otherwise rustdoc-ui tests break.
-                if config.channel != ci_channel
-                    && !(config.channel == "dev" && ci_channel == "nightly")
-                {
-                    panic!(
-                        "setting rust.channel={} is incompatible with download-rustc",
-                        config.channel
-                    );
-                }
-            }
+
+            // FIXME: handle download-rustc incompatible options.
 
             debug = debug_toml;
             debug_assertions = debug_assertions_toml;
@@ -2101,15 +2090,6 @@ impl Config {
         build_helper::util::try_run(cmd, self.is_verbose())
     }
 
-    /// A git invocation which runs inside the source directory.
-    ///
-    /// Use this rather than `Command::new("git")` in order to support out-of-tree builds.
-    pub(crate) fn git(&self) -> Command {
-        let mut git = Command::new("git");
-        git.current_dir(&self.src);
-        git
-    }
-
     pub(crate) fn test_args(&self) -> Vec<&str> {
         let mut test_args = match self.cmd {
             Subcommand::Test { ref test_args, .. }
@@ -2134,17 +2114,29 @@ impl Config {
         args
     }
 
+    /// Returns the content of the given file at a specific commit.
+    pub(crate) fn read_file_by_commit(&self, file: &Path, commit: &str) -> String {
+        assert!(
+            self.rust_info.is_managed_git_subrepository(),
+            "`Config::read_file_by_commit` is not supported in non-git sources."
+        );
+
+        let mut git = helpers::git(Some(&self.src));
+        git.arg("show").arg(format!("{commit}:{}", file.to_str().unwrap()));
+        output(&mut git)
+    }
+
     /// Bootstrap embeds a version number into the name of shared libraries it uploads in CI.
     /// Return the version it would have used for the given commit.
     pub(crate) fn artifact_version_part(&self, commit: &str) -> String {
         let (channel, version) = if self.rust_info.is_managed_git_subrepository() {
-            let mut channel = self.git();
-            channel.arg("show").arg(format!("{commit}:src/ci/channel"));
-            let channel = output(&mut channel);
-            let mut version = self.git();
-            version.arg("show").arg(format!("{commit}:src/version"));
-            let version = output(&mut version);
-            (channel.trim().to_owned(), version.trim().to_owned())
+            let channel = self
+                .read_file_by_commit(&PathBuf::from("src/ci/channel"), commit)
+                .trim()
+                .to_owned();
+            let version =
+                self.read_file_by_commit(&PathBuf::from("src/version"), commit).trim().to_owned();
+            (channel, version)
         } else {
             let channel = fs::read_to_string(self.src.join("src/ci/channel"));
             let version = fs::read_to_string(self.src.join("src/version"));
@@ -2435,7 +2427,8 @@ impl Config {
         };
 
         // Handle running from a directory other than the top level
-        let top_level = output(self.git().args(["rev-parse", "--show-toplevel"]));
+        let top_level =
+            output(helpers::git(Some(&self.src)).args(["rev-parse", "--show-toplevel"]));
         let top_level = top_level.trim_end();
         let compiler = format!("{top_level}/compiler/");
         let library = format!("{top_level}/library/");
@@ -2443,7 +2436,7 @@ impl Config {
         // Look for a version to compare to based on the current commit.
         // Only commits merged by bors will have CI artifacts.
         let merge_base = output(
-            self.git()
+            helpers::git(Some(&self.src))
                 .arg("rev-list")
                 .arg(format!("--author={}", self.stage0_metadata.config.git_merge_commit_email))
                 .args(["-n1", "--first-parent", "HEAD"]),
@@ -2458,8 +2451,7 @@ impl Config {
         }
 
         // Warn if there were changes to the compiler or standard library since the ancestor commit.
-        let has_changes = !t!(self
-            .git()
+        let has_changes = !t!(helpers::git(Some(&self.src))
             .args(["diff-index", "--quiet", commit, "--", &compiler, &library])
             .status())
         .success();
@@ -2532,13 +2524,14 @@ impl Config {
         if_unchanged: bool,
     ) -> Option<String> {
         // Handle running from a directory other than the top level
-        let top_level = output(self.git().args(["rev-parse", "--show-toplevel"]));
+        let top_level =
+            output(helpers::git(Some(&self.src)).args(["rev-parse", "--show-toplevel"]));
         let top_level = top_level.trim_end();
 
         // Look for a version to compare to based on the current commit.
         // Only commits merged by bors will have CI artifacts.
         let merge_base = output(
-            self.git()
+            helpers::git(Some(&self.src))
                 .arg("rev-list")
                 .arg(format!("--author={}", self.stage0_metadata.config.git_merge_commit_email))
                 .args(["-n1", "--first-parent", "HEAD"]),
@@ -2553,7 +2546,7 @@ impl Config {
         }
 
         // Warn if there were changes to the compiler or standard library since the ancestor commit.
-        let mut git = self.git();
+        let mut git = helpers::git(Some(&self.src));
         git.args(["diff-index", "--quiet", commit, "--"]);
 
         for path in modified_paths {

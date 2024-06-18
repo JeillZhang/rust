@@ -4,7 +4,7 @@ use super::pat::{CommaRecoveryMode, Expected, RecoverColon, RecoverComma};
 use super::ty::{AllowPlus, RecoverQPath, RecoverReturnSign};
 use super::{
     AttrWrapper, BlockMode, ClosureSpans, ForceCollect, Parser, PathStyle, Restrictions,
-    SemiColonMode, SeqSep, TokenExpectType, TokenType, Trailing, TrailingToken,
+    SemiColonMode, SeqSep, TokenType, Trailing, TrailingToken,
 };
 
 use crate::errors;
@@ -431,7 +431,7 @@ impl<'a> Parser<'a> {
     /// The method does not advance the current token.
     ///
     /// Also performs recovery for `and` / `or` which are mistaken for `&&` and `||` respectively.
-    pub fn check_assoc_op(&self) -> Option<Spanned<AssocOp>> {
+    pub(super) fn check_assoc_op(&self) -> Option<Spanned<AssocOp>> {
         let (op, span) = match (AssocOp::from_token(&self.token), self.token.ident()) {
             // When parsing const expressions, stop parsing when encountering `>`.
             (
@@ -1006,7 +1006,11 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub fn parse_dot_suffix_expr(&mut self, lo: Span, base: P<Expr>) -> PResult<'a, P<Expr>> {
+    pub(super) fn parse_dot_suffix_expr(
+        &mut self,
+        lo: Span,
+        base: P<Expr>,
+    ) -> PResult<'a, P<Expr>> {
         // At this point we've consumed something like `expr.` and `self.token` holds the token
         // after the dot.
         match self.token.uninterpolate().kind {
@@ -2452,9 +2456,9 @@ impl<'a> Parser<'a> {
             self.expect(&token::BinOp(token::Or))?;
             let args = self
                 .parse_seq_to_before_tokens(
-                    &[&token::BinOp(token::Or), &token::OrOr],
+                    &[&token::BinOp(token::Or)],
+                    &[&token::OrOr],
                     SeqSep::trailing_allowed(token::Comma),
-                    TokenExpectType::NoExpect,
                     |p| p.parse_fn_block_param(),
                 )?
                 .0;
