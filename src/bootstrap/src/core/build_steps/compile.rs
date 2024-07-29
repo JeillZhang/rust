@@ -8,31 +8,27 @@
 
 use std::borrow::Cow;
 use std::collections::HashSet;
-use std::env;
 use std::ffi::OsStr;
-use std::fs;
 use std::io::prelude::*;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::str;
+use std::{env, fs, str};
 
 use serde_derive::Deserialize;
 
-use crate::core::build_steps::dist;
-use crate::core::build_steps::llvm;
 use crate::core::build_steps::tool::SourceType;
+use crate::core::build_steps::{dist, llvm};
 use crate::core::builder;
-use crate::core::builder::crate_description;
-use crate::core::builder::Cargo;
-use crate::core::builder::{Builder, Kind, PathSet, RunConfig, ShouldRun, Step, TaskPath};
+use crate::core::builder::{
+    crate_description, Builder, Cargo, Kind, PathSet, RunConfig, ShouldRun, Step, TaskPath,
+};
 use crate::core::config::{DebuginfoLevel, LlvmLibunwind, RustcLto, TargetSelection};
 use crate::utils::exec::command;
 use crate::utils::helpers::{
     exe, get_clang_cl_resource_dir, is_debug_info, is_dylib, symlink_dir, t, up_to_date,
 };
-use crate::LLVM_TOOLS;
-use crate::{CLang, Compiler, DependencyType, GitRepo, Mode};
+use crate::{CLang, Compiler, DependencyType, GitRepo, Mode, LLVM_TOOLS};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Std {
@@ -251,7 +247,7 @@ impl Step for Std {
                 Mode::Std,
                 SourceType::InTree,
                 target,
-                "check",
+                Kind::Check,
             );
             cargo.rustflag("-Zalways-encode-mir");
             cargo.arg("--manifest-path").arg(builder.src.join("library/sysroot/Cargo.toml"));
@@ -263,7 +259,7 @@ impl Step for Std {
                 Mode::Std,
                 SourceType::InTree,
                 target,
-                "build",
+                Kind::Build,
             );
             std_cargo(builder, target, compiler.stage, &mut cargo);
             for krate in &*self.crates {
@@ -923,7 +919,7 @@ impl Step for Rustc {
             Mode::Rustc,
             SourceType::InTree,
             target,
-            "build",
+            Kind::Build,
         );
 
         rustc_cargo(builder, &mut cargo, target, &compiler);
@@ -1363,7 +1359,7 @@ impl Step for CodegenBackend {
             Mode::Codegen,
             SourceType::InTree,
             target,
-            "build",
+            Kind::Build,
         );
         cargo
             .arg("--manifest-path")
