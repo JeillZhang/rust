@@ -183,6 +183,7 @@ struct Crate {
     deps: HashSet<String>,
     path: PathBuf,
     has_lib: bool,
+    features: Vec<String>,
 }
 
 impl Crate {
@@ -332,14 +333,20 @@ impl Build {
         .trim()
         .to_string();
 
-        let initial_libdir = initial_target_dir
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .strip_prefix(&initial_sysroot)
-            .unwrap()
-            .to_path_buf();
+        // FIXME(Zalathar): Determining this path occasionally fails locally for
+        // unknown reasons, so we print some extra context to help track down why.
+        let find_initial_libdir = || {
+            let initial_libdir =
+                initial_target_dir.parent()?.parent()?.strip_prefix(&initial_sysroot).ok()?;
+            Some(initial_libdir.to_path_buf())
+        };
+        let Some(initial_libdir) = find_initial_libdir() else {
+            panic!(
+                "couldn't determine `initial_libdir` \
+                from target dir {initial_target_dir:?} \
+                and sysroot {initial_sysroot:?}"
+            )
+        };
 
         let version = std::fs::read_to_string(src.join("src").join("version"))
             .expect("failed to read src/version");
@@ -666,16 +673,24 @@ impl Build {
     }
 
     /// Gets the space-separated set of activated features for the compiler.
-    fn rustc_features(&self, kind: Kind, target: TargetSelection) -> String {
+    fn rustc_features(&self, kind: Kind, target: TargetSelection, crates: &[String]) -> String {
+        let possible_features_by_crates: HashSet<_> = crates
+            .iter()
+            .flat_map(|krate| &self.crates[krate].features)
+            .map(std::ops::Deref::deref)
+            .collect();
+        let check = |feature: &str| -> bool {
+            crates.is_empty() || possible_features_by_crates.contains(feature)
+        };
         let mut features = vec![];
-        if self.config.jemalloc {
+        if self.config.jemalloc && check("jemalloc") {
             features.push("jemalloc");
         }
-        if self.config.llvm_enabled(target) || kind == Kind::Check {
+        if (self.config.llvm_enabled(target) || kind == Kind::Check) && check("llvm") {
             features.push("llvm");
         }
         // keep in sync with `bootstrap/compile.rs:rustc_cargo_env`
-        if self.config.rustc_parallel {
+        if self.config.rustc_parallel && check("rustc_use_parallel_compiler") {
             features.push("rustc_use_parallel_compiler");
         }
         if self.config.rust_randomize_layout {
@@ -687,7 +702,7 @@ impl Build {
         // which is everything (including debug/trace/etc.)
         // if its unset, if debug_assertions is on, then debug_logging will also be on
         // as well as tracing *ignoring* this feature when debug_assertions is on
-        if !self.config.rust_debug_logging {
+        if !self.config.rust_debug_logging && check("max_level_info") {
             features.push("max_level_info");
         }
 

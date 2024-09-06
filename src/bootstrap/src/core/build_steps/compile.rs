@@ -931,7 +931,12 @@ impl Step for Rustc {
         // NOTE: the ABI of the beta compiler is different from the ABI of the downloaded compiler,
         // so its artifacts can't be reused.
         if builder.download_rustc() && compiler.stage != 0 {
-            builder.ensure(Sysroot { compiler, force_recompile: false });
+            let sysroot = builder.ensure(Sysroot { compiler, force_recompile: false });
+            cp_rustc_component_to_ci_sysroot(
+                builder,
+                &sysroot,
+                builder.config.ci_rustc_dev_contents(),
+            );
             return compiler.stage;
         }
 
@@ -983,7 +988,7 @@ impl Step for Rustc {
             Kind::Build,
         );
 
-        rustc_cargo(builder, &mut cargo, target, &compiler);
+        rustc_cargo(builder, &mut cargo, target, &compiler, &self.crates);
 
         // NB: all RUSTFLAGS should be added to `rustc_cargo()` so they will be
         // consistently applied by check/doc/test modes too.
@@ -1042,10 +1047,11 @@ pub fn rustc_cargo(
     cargo: &mut Cargo,
     target: TargetSelection,
     compiler: &Compiler,
+    crates: &[String],
 ) {
     cargo
         .arg("--features")
-        .arg(builder.rustc_features(builder.kind, target))
+        .arg(builder.rustc_features(builder.kind, target, crates))
         .arg("--manifest-path")
         .arg(builder.src.join("compiler/rustc/Cargo.toml"));
 
