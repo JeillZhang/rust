@@ -153,6 +153,7 @@
 #![feature(isqrt)]
 #![feature(lazy_get)]
 #![feature(link_cfg)]
+#![feature(non_null_from_ref)]
 #![feature(offset_of_enum)]
 #![feature(panic_internals)]
 #![feature(ptr_alignment_type)]
@@ -173,9 +174,6 @@
 //
 // Language features:
 // tidy-alphabetical-start
-#![cfg_attr(bootstrap, feature(const_mut_refs))]
-#![cfg_attr(bootstrap, feature(const_refs_to_cell))]
-#![cfg_attr(bootstrap, feature(const_refs_to_static))]
 #![feature(abi_unadjusted)]
 #![feature(adt_const_params)]
 #![feature(allow_internal_unsafe)]
