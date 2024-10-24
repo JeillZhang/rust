@@ -244,7 +244,6 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
             .param_env
             .caller_bounds()
             .iter()
-            .filter(|p| !p.references_error())
             .filter_map(|p| p.as_trait_clause())
             // Micro-optimization: filter out predicates relating to different traits.
             .filter(|p| p.def_id() == stack.obligation.predicate.def_id())
@@ -547,7 +546,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
                 }
             }
             // Provide an impl for suitable functions, rejecting `#[target_feature]` functions (RFC 2396).
-            ty::FnDef(def_id, _args) => {
+            ty::FnDef(def_id, _) => {
                 let tcx = self.tcx();
                 if tcx.fn_sig(def_id).skip_binder().is_fn_trait_compatible()
                     && tcx.codegen_fn_attrs(def_id).target_features.is_empty()
