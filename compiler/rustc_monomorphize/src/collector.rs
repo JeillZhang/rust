@@ -257,7 +257,7 @@ struct SharedState<'tcx> {
 
 pub(crate) struct UsageMap<'tcx> {
     // Maps every mono item to the mono items used by it.
-    used_map: UnordMap<MonoItem<'tcx>, Vec<MonoItem<'tcx>>>,
+    pub used_map: UnordMap<MonoItem<'tcx>, Vec<MonoItem<'tcx>>>,
 
     // Maps every mono item to the mono items that use it.
     user_map: UnordMap<MonoItem<'tcx>, Vec<MonoItem<'tcx>>>,
@@ -813,6 +813,9 @@ impl<'a, 'tcx> MirVisitor<'tcx> for MirUsedCollector<'a, 'tcx> {
                 }
                 mir::AssertKind::MisalignedPointerDereference { .. } => {
                     push_mono_lang_item(self, LangItem::PanicMisalignedPointerDereference);
+                }
+                mir::AssertKind::NullPointerDereference => {
+                    push_mono_lang_item(self, LangItem::PanicNullPointerDereference);
                 }
                 _ => {
                     push_mono_lang_item(self, msg.panic_function());
