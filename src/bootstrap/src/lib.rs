@@ -21,7 +21,6 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::OnceLock;
 use std::time::SystemTime;
 use std::{env, fs, io, str};
@@ -39,7 +38,7 @@ use crate::core::builder::Kind;
 use crate::core::config::{DryRun, LldMode, LlvmLibunwind, TargetSelection, flags};
 use crate::utils::exec::{BehaviorOnFailure, BootstrapCommand, CommandOutput, OutputMode, command};
 use crate::utils::helpers::{
-    self, dir_is_empty, exe, libdir, output, set_file_times, split_debuginfo, symlink_dir,
+    self, dir_is_empty, exe, libdir, set_file_times, split_debuginfo, symlink_dir,
 };
 
 mod core;
@@ -175,7 +174,7 @@ pub struct Build {
     verbosity: usize,
 
     /// Build triple for the pre-compiled snapshot compiler.
-    build: TargetSelection,
+    host_target: TargetSelection,
     /// Which triples to produce a compiler toolchain for.
     hosts: Vec<TargetSelection>,
     /// Which triples to build libraries (core/alloc/std/test/proc_macro) for.
@@ -376,10 +375,13 @@ impl Build {
         let in_tree_llvm_info = config.in_tree_llvm_info.clone();
         let in_tree_gcc_info = config.in_tree_gcc_info.clone();
 
-        let initial_target_libdir =
-            output(Command::new(&config.initial_rustc).args(["--print", "target-libdir"]))
-                .trim()
-                .to_owned();
+        let initial_target_libdir = command(&config.initial_rustc)
+            .run_always()
+            .args(["--print", "target-libdir"])
+            .run_capture_stdout(&config)
+            .stdout()
+            .trim()
+            .to_owned();
 
         let initial_target_dir = Path::new(&initial_target_libdir)
             .parent()
@@ -420,7 +422,7 @@ impl Build {
         if bootstrap_out.ends_with("deps") {
             bootstrap_out.pop();
         }
-        if !bootstrap_out.join(exe("rustc", config.build)).exists() && !cfg!(test) {
+        if !bootstrap_out.join(exe("rustc", config.host_target)).exists() && !cfg!(test) {
             // this restriction can be lifted whenever https://github.com/rust-lang/rfcs/pull/3028 is implemented
             panic!(
                 "`rustc` not found in {}, run `cargo build --bins` before `cargo run`",
@@ -436,7 +438,9 @@ impl Build {
             initial_lld,
             initial_relative_libdir,
             initial_rustc: config.initial_rustc.clone(),
-            initial_rustdoc: config.initial_rustc.with_file_name(exe("rustdoc", config.build)),
+            initial_rustdoc: config
+                .initial_rustc
+                .with_file_name(exe("rustdoc", config.host_target)),
             initial_cargo: config.initial_cargo.clone(),
             initial_sysroot: config.initial_sysroot.clone(),
             local_rebuild: config.local_rebuild,
@@ -444,7 +448,7 @@ impl Build {
             doc_tests: config.cmd.doc_tests(),
             verbosity: config.verbose,
 
-            build: config.build,
+            host_target: config.host_target,
             hosts: config.hosts.clone(),
             targets: config.targets.clone(),
 
@@ -477,8 +481,11 @@ impl Build {
 
         // If local-rust is the same major.minor as the current version, then force a
         // local-rebuild
-        let local_version_verbose =
-            output(Command::new(&build.initial_rustc).arg("--version").arg("--verbose"));
+        let local_version_verbose = command(&build.initial_rustc)
+            .run_always()
+            .args(["--version", "--verbose"])
+            .run_capture_stdout(&build)
+            .stdout();
         let local_release = local_version_verbose
             .lines()
             .filter_map(|x| x.strip_prefix("release:"))
@@ -521,7 +528,7 @@ impl Build {
         }
 
         // Create symbolic link to use host sysroot from a consistent path (e.g., in the rust-analyzer config file).
-        let build_triple = build.out.join(build.build);
+        let build_triple = build.out.join(build.host_target);
         t!(fs::create_dir_all(&build_triple));
         let host = build.out.join("host");
         if host.is_symlink() {
@@ -932,16 +939,21 @@ impl Build {
 
     /// Returns the libdir of the snapshot compiler.
     fn rustc_snapshot_libdir(&self) -> PathBuf {
-        self.rustc_snapshot_sysroot().join(libdir(self.config.build))
+        self.rustc_snapshot_sysroot().join(libdir(self.config.host_target))
     }
 
     /// Returns the sysroot of the snapshot compiler.
     fn rustc_snapshot_sysroot(&self) -> &Path {
         static SYSROOT_CACHE: OnceLock<PathBuf> = OnceLock::new();
         SYSROOT_CACHE.get_or_init(|| {
-            let mut rustc = Command::new(&self.initial_rustc);
-            rustc.args(["--print", "sysroot"]);
-            output(&mut rustc).trim().into()
+            command(&self.initial_rustc)
+                .run_always()
+                .args(["--print", "sysroot"])
+                .run_capture_stdout(self)
+                .stdout()
+                .trim()
+                .to_owned()
+                .into()
         })
     }
 
@@ -973,7 +985,7 @@ impl Build {
         what: impl Display,
         target: impl Into<Option<TargetSelection>>,
     ) -> Option<gha::Group> {
-        self.msg(Kind::Clippy, self.config.stage, what, self.config.build, target)
+        self.msg(Kind::Clippy, self.config.stage, what, self.config.host_target, target)
     }
 
     #[must_use = "Groups should not be dropped until the Step finishes running"]
@@ -988,7 +1000,7 @@ impl Build {
             Kind::Check,
             custom_stage.unwrap_or(self.config.stage),
             what,
-            self.config.build,
+            self.config.host_target,
             target,
         )
     }
@@ -1246,7 +1258,7 @@ impl Build {
             Some(self.cc(target))
         } else if self.config.lld_mode.is_used()
             && self.is_lld_direct_linker(target)
-            && self.build == target
+            && self.host_target == target
         {
             match self.config.lld_mode {
                 LldMode::SelfContained => Some(self.initial_lld.clone()),
@@ -1400,7 +1412,7 @@ impl Build {
 
     /// Path to the python interpreter to use
     fn python(&self) -> &Path {
-        if self.config.build.ends_with("apple-darwin") {
+        if self.config.host_target.ends_with("apple-darwin") {
             // Force /usr/bin/python3 on macOS for LLDB tests because we're loading the
             // LLDB plugin's compiled module which only works with the system python
             // (namely not Homebrew-installed python)
@@ -1440,7 +1452,7 @@ impl Build {
         !self.config.full_bootstrap
             && !self.config.download_rustc()
             && stage >= 2
-            && (self.hosts.contains(&target) || target == self.build)
+            && (self.hosts.contains(&target) || target == self.host_target)
     }
 
     /// Checks whether the `compiler` compiling for `target` should be forced to
@@ -1877,7 +1889,7 @@ to download LLVM rather than building it.
         // In these cases we automatically enable Ninja if we find it in the
         // environment.
         if !self.config.ninja_in_file
-            && self.config.build.is_msvc()
+            && self.config.host_target.is_msvc()
             && cmd_finder.maybe_have("ninja").is_some()
         {
             return true;
@@ -1946,7 +1958,7 @@ impl Compiler {
 
     /// Returns `true` if this is a snapshot compiler for `build`'s configuration
     pub fn is_snapshot(&self, build: &Build) -> bool {
-        self.stage == 0 && self.host == build.build
+        self.stage == 0 && self.host == build.host_target
     }
 
     /// Indicates whether the compiler was forced to use a specific stage.

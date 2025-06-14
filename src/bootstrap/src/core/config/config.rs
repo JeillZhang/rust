@@ -35,7 +35,7 @@ pub use crate::core::config::flags::Subcommand;
 use crate::core::config::flags::{Color, Flags};
 use crate::core::config::target_selection::TargetSelectionList;
 use crate::core::config::toml::TomlConfig;
-use crate::core::config::toml::build::Build;
+use crate::core::config::toml::build::{Build, Tool};
 use crate::core::config::toml::change_id::ChangeId;
 use crate::core::config::toml::rust::{
     LldMode, RustOptimize, check_incompatible_options_for_ci_rustc,
@@ -52,39 +52,26 @@ use crate::utils::execution_context::ExecutionContext;
 use crate::utils::helpers::exe;
 use crate::{GitInfo, OnceLock, TargetSelection, check_ci_llvm, helpers, t};
 
-/// Each path from this function is considered "allowed" in the `download-rustc="if-unchanged"` logic.
+/// Each path in this list is considered "allowed" in the `download-rustc="if-unchanged"` logic.
 /// This means they can be modified and changes to these paths should never trigger a compiler build
 /// when "if-unchanged" is set.
-pub fn rustc_if_unchanged_allowed_paths() -> Vec<&'static str> {
-    // NOTE: Paths must have the ":!" prefix to tell git to ignore changes in those paths during
-    // the diff check.
-    //
-    // WARNING: Be cautious when adding paths to this list. If a path that influences the compiler build
-    // is added here, it will cause bootstrap to skip necessary rebuilds, which may lead to risky results.
-    // For example, "src/bootstrap" should never be included in this list as it plays a crucial role in the
-    // final output/compiler, which can be significantly affected by changes made to the bootstrap sources.
-    let mut paths = vec![
-        ":!library",
-        ":!src/tools",
-        ":!src/librustdoc",
-        ":!src/rustdoc-json-types",
-        ":!tests",
-        ":!triagebot.toml",
-    ];
-
-    if !CiEnv::is_ci() {
-        // When a dependency is added/updated/removed in the library tree (or in some tools),
-        // `Cargo.lock` will be updated by `cargo`. This update will incorrectly invalidate the
-        // `download-rustc=if-unchanged` cache.
-        //
-        // To prevent this, add `Cargo.lock` to the list of allowed paths when not running on CI.
-        // This is generally safe because changes to dependencies typically involve modifying
-        // `Cargo.toml`, which would already invalidate the CI-rustc cache on non-allowed paths.
-        paths.push(":!Cargo.lock");
-    }
-
-    paths
-}
+///
+/// NOTE: Paths must have the ":!" prefix to tell git to ignore changes in those paths during
+/// the diff check.
+///
+/// WARNING: Be cautious when adding paths to this list. If a path that influences the compiler build
+/// is added here, it will cause bootstrap to skip necessary rebuilds, which may lead to risky results.
+/// For example, "src/bootstrap" should never be included in this list as it plays a crucial role in the
+/// final output/compiler, which can be significantly affected by changes made to the bootstrap sources.
+#[rustfmt::skip] // We don't want rustfmt to oneline this list
+pub const RUSTC_IF_UNCHANGED_ALLOWED_PATHS: &[&str] = &[
+    ":!library",
+    ":!src/tools",
+    ":!src/librustdoc",
+    ":!src/rustdoc-json-types",
+    ":!tests",
+    ":!triagebot.toml",
+];
 
 /// Global configuration for the entire build and/or bootstrap.
 ///
@@ -114,6 +101,9 @@ pub struct Config {
     pub bootstrap_cache_path: Option<PathBuf>,
     pub extended: bool,
     pub tools: Option<HashSet<String>>,
+    /// Specify build configuration specific for some tool, such as enabled features, see [Tool].
+    /// The key in the map is the name of the tool, and the value is tool-specific configuration.
+    pub tool: HashMap<String, Tool>,
     pub sanitizers: bool,
     pub profiler: bool,
     pub omit_git_hash: bool,
@@ -234,7 +224,7 @@ pub struct Config {
 
     pub reproducible_artifacts: Vec<String>,
 
-    pub build: TargetSelection,
+    pub host_target: TargetSelection,
     pub hosts: Vec<TargetSelection>,
     pub targets: Vec<TargetSelection>,
     pub local_rebuild: bool,
@@ -359,7 +349,7 @@ impl Config {
             stderr_is_tty: std::io::stderr().is_terminal(),
 
             // set by build.rs
-            build: TargetSelection::from_user(env!("BUILD_TRIPLE")),
+            host_target: TargetSelection::from_user(env!("BUILD_TRIPLE")),
 
             src: {
                 let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -689,6 +679,7 @@ impl Config {
             bootstrap_cache_path,
             extended,
             tools,
+            tool,
             verbose,
             sanitizers,
             profiler,
@@ -740,7 +731,7 @@ impl Config {
         config.jobs = Some(threads_from_config(flags.jobs.unwrap_or(jobs.unwrap_or(0))));
 
         if let Some(file_build) = build {
-            config.build = TargetSelection::from_user(&file_build);
+            config.host_target = TargetSelection::from_user(&file_build);
         };
 
         set(&mut config.out, flags.build_dir.or_else(|| build_dir.map(PathBuf::from)));
@@ -766,10 +757,10 @@ impl Config {
             config.download_beta_toolchain();
             config
                 .out
-                .join(config.build)
+                .join(config.host_target)
                 .join("stage0")
                 .join("bin")
-                .join(exe("rustc", config.build))
+                .join(exe("rustc", config.host_target))
         };
 
         config.initial_sysroot = t!(PathBuf::from_str(
@@ -790,7 +781,7 @@ impl Config {
             cargo
         } else {
             config.download_beta_toolchain();
-            config.initial_sysroot.join("bin").join(exe("cargo", config.build))
+            config.initial_sysroot.join("bin").join(exe("cargo", config.host_target))
         };
 
         // NOTE: it's important this comes *after* we set `initial_rustc` just above.
@@ -805,7 +796,7 @@ impl Config {
         } else if let Some(file_host) = host {
             file_host.iter().map(|h| TargetSelection::from_user(h)).collect()
         } else {
-            vec![config.build]
+            vec![config.host_target]
         };
         config.targets = if let Some(TargetSelectionList(arg_target)) = flags.target {
             arg_target
@@ -835,6 +826,7 @@ impl Config {
         set(&mut config.full_bootstrap, full_bootstrap);
         set(&mut config.extended, extended);
         config.tools = tools;
+        set(&mut config.tool, tool);
         set(&mut config.verbose, verbose);
         set(&mut config.sanitizers, sanitizers);
         set(&mut config.profiler, profiler);
@@ -939,17 +931,19 @@ impl Config {
         }
 
         if config.llvm_from_ci {
-            let triple = &config.build.triple;
+            let triple = &config.host_target.triple;
             let ci_llvm_bin = config.ci_llvm_root().join("bin");
             let build_target = config
                 .target_config
-                .entry(config.build)
+                .entry(config.host_target)
                 .or_insert_with(|| Target::from_triple(triple));
 
             check_ci_llvm!(build_target.llvm_config);
             check_ci_llvm!(build_target.llvm_filecheck);
-            build_target.llvm_config = Some(ci_llvm_bin.join(exe("llvm-config", config.build)));
-            build_target.llvm_filecheck = Some(ci_llvm_bin.join(exe("FileCheck", config.build)));
+            build_target.llvm_config =
+                Some(ci_llvm_bin.join(exe("llvm-config", config.host_target)));
+            build_target.llvm_filecheck =
+                Some(ci_llvm_bin.join(exe("FileCheck", config.host_target)));
         }
 
         config.apply_dist_config(toml.dist);
@@ -966,7 +960,7 @@ impl Config {
             );
         }
 
-        if config.lld_enabled && config.is_system_llvm(config.build) {
+        if config.lld_enabled && config.is_system_llvm(config.host_target) {
             eprintln!(
                 "Warning: LLD is enabled when using external llvm-config. LLD will not be built and copied to the sysroot."
             );
@@ -1160,13 +1154,13 @@ impl Config {
     /// The absolute path to the downloaded LLVM artifacts.
     pub(crate) fn ci_llvm_root(&self) -> PathBuf {
         assert!(self.llvm_from_ci);
-        self.out.join(self.build).join("ci-llvm")
+        self.out.join(self.host_target).join("ci-llvm")
     }
 
     /// Directory where the extracted `rustc-dev` component is stored.
     pub(crate) fn ci_rustc_dir(&self) -> PathBuf {
         assert!(self.download_rustc());
-        self.out.join(self.build).join("ci-rustc")
+        self.out.join(self.host_target).join("ci-rustc")
     }
 
     /// Determine whether llvm should be linked dynamically.
@@ -1250,7 +1244,7 @@ impl Config {
                         // Check the config compatibility
                         // FIXME: this doesn't cover `--set` flags yet.
                         let res = check_incompatible_options_for_ci_rustc(
-                            self.build,
+                            self.host_target,
                             current_config_toml,
                             ci_config_toml,
                         );
@@ -1402,7 +1396,8 @@ impl Config {
                 // If there is a tag named after the current branch, git will try to disambiguate by prepending `heads/` to the branch name.
                 // This syntax isn't accepted by `branch.{branch}`. Strip it.
                 let branch = current_branch.stdout();
-                let branch = branch.strip_prefix("heads/").unwrap_or(&branch);
+                let branch = branch.trim();
+                let branch = branch.strip_prefix("heads/").unwrap_or(branch);
                 git.arg("-c").arg(format!("branch.{branch}.remote=origin"));
             }
             git.args(["submodule", "update", "--init", "--recursive", "--depth=1"]);
@@ -1485,7 +1480,7 @@ impl Config {
         debug_assertions_requested: bool,
         llvm_assertions: bool,
     ) -> Option<String> {
-        if !is_download_ci_available(&self.build.triple, llvm_assertions) {
+        if !is_download_ci_available(&self.host_target.triple, llvm_assertions) {
             return None;
         }
 
@@ -1516,7 +1511,7 @@ impl Config {
         let commit = if self.rust_info.is_managed_git_subrepository() {
             // Look for a version to compare to based on the current commit.
             // Only commits merged by bors will have CI artifacts.
-            let freshness = self.check_path_modifications(&rustc_if_unchanged_allowed_paths());
+            let freshness = self.check_path_modifications(RUSTC_IF_UNCHANGED_ALLOWED_PATHS);
             self.verbose(|| {
                 eprintln!("rustc freshness: {freshness:?}");
             });
@@ -1721,7 +1716,7 @@ impl Config {
 
     /// Checks if the given target is the same as the host target.
     pub fn is_host_target(&self, target: TargetSelection) -> bool {
-        self.build == target
+        self.host_target == target
     }
 
     /// Returns `true` if this is an external version of LLVM not managed by bootstrap.
