@@ -4400,27 +4400,6 @@ impl ItemKind<'_> {
             _ => return None,
         })
     }
-
-    pub fn descr(&self) -> &'static str {
-        match self {
-            ItemKind::ExternCrate(..) => "extern crate",
-            ItemKind::Use(..) => "`use` import",
-            ItemKind::Static(..) => "static item",
-            ItemKind::Const(..) => "constant item",
-            ItemKind::Fn { .. } => "function",
-            ItemKind::Macro(..) => "macro",
-            ItemKind::Mod(..) => "module",
-            ItemKind::ForeignMod { .. } => "extern block",
-            ItemKind::GlobalAsm { .. } => "global asm item",
-            ItemKind::TyAlias(..) => "type alias",
-            ItemKind::Enum(..) => "enum",
-            ItemKind::Struct(..) => "struct",
-            ItemKind::Union(..) => "union",
-            ItemKind::Trait(..) => "trait",
-            ItemKind::TraitAlias(..) => "trait alias",
-            ItemKind::Impl(..) => "implementation",
-        }
-    }
 }
 
 /// A reference from an trait to one of its associated items. This
@@ -4832,6 +4811,10 @@ impl<'hir> Node<'hir> {
             Node::ImplItem(it) => match it.kind {
                 ImplItemKind::Const(ty, _) => Some(ty),
                 ImplItemKind::Type(ty) => Some(ty),
+                _ => None,
+            },
+            Node::ForeignItem(it) => match it.kind {
+                ForeignItemKind::Static(ty, ..) => Some(ty),
                 _ => None,
             },
             _ => None,
