@@ -20,8 +20,8 @@ use rustc_hir::def::DefKind;
 use rustc_hir::def_id::LocalModDefId;
 use rustc_hir::intravisit::{self, Visitor};
 use rustc_hir::{
-    self as hir, self, AssocItemKind, Attribute, CRATE_HIR_ID, CRATE_OWNER_ID, FnSig, ForeignItem,
-    HirId, Item, ItemKind, MethodKind, Safety, Target, TraitItem,
+    self as hir, self, Attribute, CRATE_HIR_ID, CRATE_OWNER_ID, FnSig, ForeignItem, HirId, Item,
+    ItemKind, MethodKind, Safety, Target, TraitItem,
 };
 use rustc_macros::LintDiagnostic;
 use rustc_middle::hir::nested_filter;
@@ -154,6 +154,14 @@ impl<'tcx> CheckAttrVisitor<'tcx> {
                 Attribute::Parsed(AttributeKind::Confusables { first_span, .. }) => {
                     self.check_confusables(*first_span, target);
                 }
+                Attribute::Parsed(AttributeKind::AutomaticallyDerived(attr_span)) => self
+                    .check_generic_attr(
+                        hir_id,
+                        sym::automatically_derived,
+                        *attr_span,
+                        target,
+                        Target::Impl,
+                    ),
                 Attribute::Parsed(
                     AttributeKind::Stability { span, .. }
                     | AttributeKind::ConstStability { span, .. },
@@ -336,9 +344,6 @@ impl<'tcx> CheckAttrVisitor<'tcx> {
                         [sym::macro_export, ..] => self.check_macro_export(hir_id, attr, target),
                         [sym::should_panic, ..] => {
                             self.check_generic_attr_unparsed(hir_id, attr, target, Target::Fn)
-                        }
-                        [sym::automatically_derived, ..] => {
-                            self.check_generic_attr_unparsed(hir_id, attr, target, Target::Impl)
                         }
                         [sym::proc_macro, ..] => {
                             self.check_proc_macro(hir_id, target, ProcMacroKind::FunctionLike)
@@ -1151,7 +1156,9 @@ impl<'tcx> CheckAttrVisitor<'tcx> {
                 if generics.params.len() != 0 => {}
             ItemKind::Trait(_, _, _, generics, _, items)
                 if generics.params.len() != 0
-                    || items.iter().any(|item| matches!(item.kind, AssocItemKind::Type)) => {}
+                    || items.iter().any(|item| {
+                        matches!(self.tcx.def_kind(item.owner_id), DefKind::AssocTy)
+                    }) => {}
             ItemKind::TyAlias(_, generics, _) if generics.params.len() != 0 => {}
             _ => {
                 self.dcx().emit_err(errors::DocSearchUnboxInvalid { span: meta.span() });
@@ -2824,7 +2831,6 @@ fn check_invalid_crate_level_attr(tcx: TyCtxt<'_>, attrs: &[Attribute]) {
     // resolution for the attribute macro error.
     const ATTRS_TO_CHECK: &[Symbol] = &[
         sym::macro_export,
-        sym::automatically_derived,
         sym::rustc_main,
         sym::derive,
         sym::test,
@@ -2847,6 +2853,8 @@ fn check_invalid_crate_level_attr(tcx: TyCtxt<'_>, attrs: &[Attribute]) {
             (*first_attr_span, sym::repr)
         } else if let Attribute::Parsed(AttributeKind::Path(.., span)) = attr {
             (*span, sym::path)
+        } else if let Attribute::Parsed(AttributeKind::AutomaticallyDerived(span)) = attr {
+            (*span, sym::automatically_derived)
         } else {
             continue;
         };
