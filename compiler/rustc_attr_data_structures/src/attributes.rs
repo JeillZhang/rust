@@ -297,6 +297,9 @@ pub enum AttributeKind {
     /// Represents `#[link_name]`.
     LinkName { name: Symbol, span: Span },
 
+    /// Represents `#[link_ordinal]`.
+    LinkOrdinal { ordinal: u16, span: Span },
+
     /// Represents [`#[link_section]`](https://doc.rust-lang.org/reference/abi.html#the-link_section-attribute)
     LinkSection { name: Symbol, span: Span },
 
@@ -330,6 +333,9 @@ pub enum AttributeKind {
 
     /// Represents `#[non_exhaustive]`
     NonExhaustive(Span),
+
+    /// Represents `#[omit_gdb_pretty_printer_section]`
+    OmitGdbPrettyPrinterSection,
 
     /// Represents `#[optimize(size|speed)]`
     Optimize(OptimizeAttr, Span),

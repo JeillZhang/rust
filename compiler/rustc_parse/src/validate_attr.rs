@@ -305,11 +305,13 @@ pub fn check_builtin_meta_item(
                 | sym::naked
                 | sym::no_mangle
                 | sym::non_exhaustive
+                | sym::omit_gdb_pretty_printer_section
                 | sym::path
                 | sym::ignore
                 | sym::must_use
                 | sym::track_caller
                 | sym::link_name
+                | sym::link_ordinal
                 | sym::export_name
                 | sym::rustc_macro_transparency
                 | sym::link_section
