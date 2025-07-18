@@ -163,6 +163,8 @@ impl<'tcx> Interner for TyCtxt<'tcx> {
     type BoundRegion = ty::BoundRegion;
     type PlaceholderRegion = ty::PlaceholderRegion;
 
+    type RegionAssumptions = &'tcx ty::List<ty::ArgOutlivesPredicate<'tcx>>;
+
     type ParamEnv = ty::ParamEnv<'tcx>;
     type Predicate = Predicate<'tcx>;
 
@@ -714,17 +716,13 @@ impl<'tcx> Interner for TyCtxt<'tcx> {
         self,
         defining_anchor: Self::LocalDefId,
     ) -> Self::LocalDefIds {
-        if self.next_trait_solver_globally() {
-            let coroutines_defined_by = self
-                .nested_bodies_within(defining_anchor)
-                .iter()
-                .filter(|def_id| self.is_coroutine(def_id.to_def_id()));
-            self.mk_local_def_ids_from_iter(
-                self.opaque_types_defined_by(defining_anchor).iter().chain(coroutines_defined_by),
-            )
-        } else {
-            self.opaque_types_defined_by(defining_anchor)
-        }
+        let coroutines_defined_by = self
+            .nested_bodies_within(defining_anchor)
+            .iter()
+            .filter(|def_id| self.is_coroutine(def_id.to_def_id()));
+        self.mk_local_def_ids_from_iter(
+            self.opaque_types_defined_by(defining_anchor).iter().chain(coroutines_defined_by),
+        )
     }
 }
 
@@ -882,6 +880,7 @@ pub struct CtxtInterners<'tcx> {
     offset_of: InternedSet<'tcx, List<(VariantIdx, FieldIdx)>>,
     valtree: InternedSet<'tcx, ty::ValTreeKind<'tcx>>,
     patterns: InternedSet<'tcx, List<ty::Pattern<'tcx>>>,
+    outlives: InternedSet<'tcx, List<ty::ArgOutlivesPredicate<'tcx>>>,
 }
 
 impl<'tcx> CtxtInterners<'tcx> {
@@ -919,6 +918,7 @@ impl<'tcx> CtxtInterners<'tcx> {
             offset_of: InternedSet::with_capacity(N),
             valtree: InternedSet::with_capacity(N),
             patterns: InternedSet::with_capacity(N),
+            outlives: InternedSet::with_capacity(N),
         }
     }
 
@@ -2700,6 +2700,7 @@ slice_interners!(
     captures: intern_captures(&'tcx ty::CapturedPlace<'tcx>),
     offset_of: pub mk_offset_of((VariantIdx, FieldIdx)),
     patterns: pub mk_patterns(Pattern<'tcx>),
+    outlives: pub mk_outlives(ty::ArgOutlivesPredicate<'tcx>),
 );
 
 impl<'tcx> TyCtxt<'tcx> {
@@ -3113,6 +3114,17 @@ impl<'tcx> TyCtxt<'tcx> {
         T: CollectAndApply<ty::BoundVariableKind, &'tcx List<ty::BoundVariableKind>>,
     {
         T::collect_and_apply(iter, |xs| self.mk_bound_variable_kinds(xs))
+    }
+
+    pub fn mk_outlives_from_iter<I, T>(self, iter: I) -> T::Output
+    where
+        I: Iterator<Item = T>,
+        T: CollectAndApply<
+                ty::ArgOutlivesPredicate<'tcx>,
+                &'tcx ty::List<ty::ArgOutlivesPredicate<'tcx>>,
+            >,
+    {
+        T::collect_and_apply(iter, |xs| self.mk_outlives(xs))
     }
 
     /// Emit a lint at `span` from a lint struct (some type that implements `LintDiagnostic`,
