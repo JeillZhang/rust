@@ -425,7 +425,7 @@ impl<'tcx> TypeFolder<TyCtxt<'tcx>> for RemapLateParam<'tcx> {
 ///
 /// trait Foo {
 ///     fn bar() -> impl Deref<Target = impl Sized>;
-///              // ^- RPITIT #1        ^- RPITIT #2
+///     //          ^- RPITIT #1        ^- RPITIT #2
 /// }
 ///
 /// impl Foo for () {
@@ -2498,7 +2498,7 @@ fn param_env_with_gat_bounds<'tcx>(
                     ty::Const::new_bound(
                         tcx,
                         ty::INNERMOST,
-                        ty::BoundVar::from_usize(bound_vars.len() - 1),
+                        ty::BoundConst { var: ty::BoundVar::from_usize(bound_vars.len() - 1) },
                     )
                     .into()
                 }
