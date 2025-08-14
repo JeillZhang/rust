@@ -13,7 +13,7 @@ use rustc_errors::{
 use rustc_feature::BUILTIN_ATTRIBUTES;
 use rustc_hir::attrs::{AttributeKind, CfgEntry, StrippedCfgItem};
 use rustc_hir::def::Namespace::{self, *};
-use rustc_hir::def::{self, CtorKind, CtorOf, DefKind, NonMacroAttrKind, PerNS};
+use rustc_hir::def::{self, CtorKind, CtorOf, DefKind, MacroKinds, NonMacroAttrKind, PerNS};
 use rustc_hir::def_id::{CRATE_DEF_ID, DefId};
 use rustc_hir::{PrimTy, Stability, StabilityLevel, find_attr};
 use rustc_middle::bug;
@@ -1096,12 +1096,14 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                         );
                     }
                 }
-                Scope::ExternPrelude => {
+                Scope::ExternPreludeItems => {
+                    // Add idents from both item and flag scopes.
                     suggestions.extend(this.extern_prelude.keys().filter_map(|ident| {
                         let res = Res::Def(DefKind::Mod, CRATE_DEF_ID.to_def_id());
                         filter_fn(res).then_some(TypoSuggestion::typo_from_ident(ident.0, res))
                     }));
                 }
+                Scope::ExternPreludeFlags => {}
                 Scope::ToolPrelude => {
                     let res = Res::NonMacroAttr(NonMacroAttrKind::Tool);
                     suggestions.extend(
@@ -1491,11 +1493,12 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                     let Some(binding) = resolution.borrow().best_binding() else {
                         continue;
                     };
-                    let Res::Def(DefKind::Macro(MacroKind::Derive | MacroKind::Attr), def_id) =
-                        binding.res()
-                    else {
+                    let Res::Def(DefKind::Macro(kinds), def_id) = binding.res() else {
                         continue;
                     };
+                    if !kinds.intersects(MacroKinds::ATTR | MacroKinds::DERIVE) {
+                        continue;
+                    }
                     // By doing this all *imported* macros get added to the `macro_map` even if they
                     // are *unused*, which makes the later suggestions find them and work.
                     let _ = this.get_macro_by_def_id(def_id);
@@ -1504,7 +1507,8 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
             },
         );
 
-        let is_expected = &|res: Res| res.macro_kind() == Some(macro_kind);
+        let is_expected =
+            &|res: Res| res.macro_kinds().is_some_and(|k| k.contains(macro_kind.into()));
         let suggestion = self.early_lookup_typo_candidate(
             ScopeSet::Macro(macro_kind),
             parent_scope,
@@ -1553,11 +1557,11 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         if let Some((def_id, unused_ident)) = unused_macro {
             let scope = self.local_macro_def_scopes[&def_id];
             let parent_nearest = parent_scope.module.nearest_parent_mod();
-            if Some(parent_nearest) == scope.opt_def_id() {
+            let unused_macro_kinds = self.local_macro_map[def_id].ext.macro_kinds();
+            if !unused_macro_kinds.contains(macro_kind.into()) {
                 match macro_kind {
                     MacroKind::Bang => {
-                        err.subdiagnostic(MacroDefinedLater { span: unused_ident.span });
-                        err.subdiagnostic(MacroSuggMovePosition { span: ident.span, ident });
+                        err.subdiagnostic(MacroRulesNot::Func { span: unused_ident.span, ident });
                     }
                     MacroKind::Attr => {
                         err.subdiagnostic(MacroRulesNot::Attr { span: unused_ident.span, ident });
@@ -1566,14 +1570,13 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                         err.subdiagnostic(MacroRulesNot::Derive { span: unused_ident.span, ident });
                     }
                 }
-
                 return;
             }
-        }
-
-        if self.macro_names.contains(&ident.normalize_to_macros_2_0()) {
-            err.subdiagnostic(AddedMacroUse);
-            return;
+            if Some(parent_nearest) == scope.opt_def_id() {
+                err.subdiagnostic(MacroDefinedLater { span: unused_ident.span });
+                err.subdiagnostic(MacroSuggMovePosition { span: ident.span, ident });
+                return;
+            }
         }
 
         if ident.name == kw::Default
@@ -1601,12 +1604,17 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
             };
 
             let desc = match binding.res() {
-                Res::Def(DefKind::Macro(MacroKind::Bang), _) => "a function-like macro".to_string(),
-                Res::Def(DefKind::Macro(MacroKind::Attr), _) | Res::NonMacroAttr(..) => {
+                Res::Def(DefKind::Macro(MacroKinds::BANG), _) => {
+                    "a function-like macro".to_string()
+                }
+                Res::Def(DefKind::Macro(MacroKinds::ATTR), _) | Res::NonMacroAttr(..) => {
                     format!("an attribute: `#[{ident}]`")
                 }
-                Res::Def(DefKind::Macro(MacroKind::Derive), _) => {
+                Res::Def(DefKind::Macro(MacroKinds::DERIVE), _) => {
                     format!("a derive macro: `#[derive({ident})]`")
+                }
+                Res::Def(DefKind::Macro(kinds), _) => {
+                    format!("{} {}", kinds.article(), kinds.descr())
                 }
                 Res::ToolMod => {
                     // Don't confuse the user with tool modules.
@@ -1642,6 +1650,11 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                 imported_ident_desc: &desc,
             };
             err.subdiagnostic(note);
+            return;
+        }
+
+        if self.macro_names.contains(&ident.normalize_to_macros_2_0()) {
+            err.subdiagnostic(AddedMacroUse);
             return;
         }
     }
@@ -1862,14 +1875,20 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         }
     }
 
-    fn ambiguity_diagnostics(&self, ambiguity_error: &AmbiguityError<'_>) -> AmbiguityErrorDiag {
+    fn ambiguity_diagnostics(&self, ambiguity_error: &AmbiguityError<'ra>) -> AmbiguityErrorDiag {
         let AmbiguityError { kind, ident, b1, b2, misc1, misc2, .. } = *ambiguity_error;
+        let extern_prelude_ambiguity = || {
+            self.extern_prelude.get(&Macros20NormalizedIdent::new(ident)).is_some_and(|entry| {
+                entry.item_binding == Some(b1) && entry.flag_binding.get() == Some(b2)
+            })
+        };
         let (b1, b2, misc1, misc2, swapped) = if b2.span.is_dummy() && !b1.span.is_dummy() {
             // We have to print the span-less alternative first, otherwise formatting looks bad.
             (b2, b1, misc2, misc1, true)
         } else {
             (b1, b2, misc1, misc2, false)
         };
+
         let could_refer_to = |b: NameBinding<'_>, misc: AmbiguityErrorMisc, also: &str| {
             let what = self.binding_description(b, ident, misc == AmbiguityErrorMisc::FromPrelude);
             let note_msg = format!("`{ident}` could{also} refer to {what}");
@@ -1885,7 +1904,8 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                     "consider adding an explicit import of `{ident}` to disambiguate"
                 ))
             }
-            if b.is_extern_crate() && ident.span.at_least_rust_2018() {
+            if b.is_extern_crate() && ident.span.at_least_rust_2018() && !extern_prelude_ambiguity()
+            {
                 help_msgs.push(format!("use `::{ident}` to refer to this {thing} unambiguously"))
             }
             match misc {
@@ -2748,9 +2768,12 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
 
         let binding_key = BindingKey::new(ident, MacroNS);
         let binding = self.resolution(crate_module, binding_key)?.binding()?;
-        let Res::Def(DefKind::Macro(MacroKind::Bang), _) = binding.res() else {
+        let Res::Def(DefKind::Macro(kinds), _) = binding.res() else {
             return None;
         };
+        if !kinds.contains(MacroKinds::BANG) {
+            return None;
+        }
         let module_name = crate_module.kind.name().unwrap_or(kw::Crate);
         let import_snippet = match import.kind {
             ImportKind::Single { source, target, .. } if source != target => {
