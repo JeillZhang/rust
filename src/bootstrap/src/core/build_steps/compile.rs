@@ -12,6 +12,7 @@ use std::ffi::OsStr;
 use std::io::BufReader;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 use std::{env, fs, str};
 
 use serde_derive::Deserialize;
@@ -38,7 +39,7 @@ use crate::{
 };
 
 /// Build a standard library for the given `target` using the given `build_compiler`.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Std {
     pub target: TargetSelection,
     /// Compiler that builds the standard library.
@@ -948,7 +949,7 @@ pub struct BuiltRustc {
 ///   so that it can compile build scripts and proc macros when building this `rustc`.
 /// - Makes sure that `build_compiler` has a standard library prepared for `target`,
 ///   so that the built `rustc` can *link to it* and use it at runtime.
-#[derive(Debug, PartialOrd, Ord, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Rustc {
     /// The target on which rustc will run (its host).
     pub target: TargetSelection,
@@ -1959,7 +1960,7 @@ impl Step for Sysroot {
 /// linker wrappers (LLD, LLVM bitcode linker, etc.).
 ///
 /// This will assemble a compiler in `build/$target/stage$stage`.
-#[derive(Debug, PartialOrd, Ord, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Assemble {
     /// The compiler which we will produce in this step. Assemble itself will
     /// take care of ensuring that the necessary prerequisites to do so exist,
@@ -2330,6 +2331,7 @@ impl Step for Assemble {
 ///
 /// For a particular stage this will link the file listed in `stamp` into the
 /// `sysroot_dst` provided.
+#[track_caller]
 pub fn add_to_sysroot(
     builder: &Builder<'_>,
     sysroot_dst: &Path,
@@ -2612,7 +2614,17 @@ pub fn strip_debug(builder: &Builder<'_>, target: TargetSelection, path: &Path) 
     }
 
     let previous_mtime = t!(t!(path.metadata()).modified());
-    command("strip").arg("--strip-debug").arg(path).run_capture(builder);
+    let stamp = BuildStamp::new(path.parent().unwrap())
+        .with_prefix(path.file_name().unwrap().to_str().unwrap())
+        .with_prefix("strip")
+        .add_stamp(previous_mtime.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos());
+
+    // Running strip can be relatively expensive (~1s on librustc_driver.so), so we don't rerun it
+    // if the file is unchanged.
+    if !stamp.is_up_to_date() {
+        command("strip").arg("--strip-debug").arg(path).run_capture(builder);
+    }
+    t!(stamp.write());
 
     let file = t!(fs::File::open(path));
 
